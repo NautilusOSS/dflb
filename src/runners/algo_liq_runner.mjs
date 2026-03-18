@@ -1,11 +1,22 @@
 /**
  * Algorand DorkFi Liquidation Runner
- * Called by liquidation_bot.py via subprocess
- * Usage: node algo_liq_runner.mjs <borrower> <collateralSymbol> <debtSymbol> <amount> <sender>
+ * Called by liquidation_bot.py via subprocess.
+ * MCP path: set DORKFI_MCP_PATH or default ~/DorkFiMCP. This local MCP dependency
+ * will be replaced by requests to the UluOS gateway service in the future.
+ * Usage: node src/runners/algo_liq_runner.mjs candidates algorand
+ *        node src/runners/algo_liq_runner.mjs build ...
  */
 
-import { prepareLiquidation } from '/Users/michaelpappalardo/DorkFiMCP/lib/builders.js';
-import { getLiquidationCandidates } from '/Users/michaelpappalardo/DorkFiMCP/lib/liquidation.js';
+import path from 'path';
+import os from 'os';
+import { pathToFileURL } from 'url';
+
+const _raw = process.env.DORKFI_MCP_PATH || path.join(os.homedir(), 'DorkFiMCP');
+const DORKFI = _raw.startsWith('~') ? path.join(os.homedir(), _raw.slice(1)) : _raw;
+const builders = await import(pathToFileURL(path.join(DORKFI, 'lib/builders.js')).href);
+const liquidation = await import(pathToFileURL(path.join(DORKFI, 'lib/liquidation.js')).href);
+const { prepareLiquidation } = builders;
+const { getLiquidationCandidates } = liquidation;
 
 const cmd = process.argv[2];
 

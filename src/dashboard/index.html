@@ -219,7 +219,7 @@
   <div class="wallet-bar">
     <div>
       <span class="wallet-label">Bot Wallet</span>
-      <span class="wallet-addr mono" onclick="navigator.clipboard.writeText('JV7URAS6XGXG7ZH44CWABWZYRIIJPXOWUVNFIJKLKJ3FRTADX2YWEJNO3A')" title="Click to copy">JV7URAS…NO3A</span>
+      <span class="wallet-addr mono" id="botWalletAddr" onclick="(function(el){const a=el.dataset.full;if(a)navigator.clipboard.writeText(a)})(this)" title="Click to copy">—</span>
     </div>
     <div class="wallet-divider"></div>
     <div class="bal"><div class="bal-label">VOI</div><div class="bal-val" id="wVoi">—</div></div>
@@ -517,7 +517,14 @@ async function fetchAll() {
       fetch('/api/balances').then(r => r.json()),
     ]);
     allRows = posRes.data || [];
+    if (!balRes.ok) throw new Error(balRes.error || 'balances failed');
     botBal = balRes.data || {};
+    const addr = botBal.botWallet || '';
+    const wEl = document.getElementById('botWalletAddr');
+    if (wEl && addr) {
+      wEl.dataset.full = addr;
+      wEl.textContent = addr.length > 12 ? addr.slice(0, 6) + '…' + addr.slice(-4) : addr;
+    }
 
     const total = botBal.totalUsd || 0;
     const voiPrice = botBal.voiUsd || 0.000182;

@@ -1,23 +1,30 @@
 #!/usr/bin/env python3
 """
 DorkFi Liquidation Bot — Voi + Algorand
-Wallet: JV7URAS6XGXG7ZH44CWABWZYRIIJPXOWUVNFIJKLKJ3FRTADX2YWEJNO3A
+Bot address is derived from LIQUIDATION_BOT_MNEMONIC (see liq-bot.env).
 """
 
-import os, json, time, logging, subprocess, base64
+import os, sys, json, time, logging, subprocess, base64
 from datetime import datetime
 from dotenv import load_dotenv
 
-load_dotenv(os.path.expanduser("~/.openclaw/workspace/liq-bot.env"))
+# Workspace: env file, state, log (and optional openclaw.json for Telegram). Override via LIQ_BOT_WORKSPACE.
+_WORKSPACE = os.environ.get("LIQ_BOT_WORKSPACE", "").strip() or os.path.expanduser("~/.openclaw/workspace")
+_ENV_FILE  = os.path.join(_WORKSPACE, "liq-bot.env")
+load_dotenv(_ENV_FILE)
 
 from algosdk import mnemonic, account, transaction, encoding
 from algosdk.v2client import algod
 
 # ── Config ─────────────────────────────────────────────────────────────────────
-WALLET        = "JV7URAS6XGXG7ZH44CWABWZYRIIJPXOWUVNFIJKLKJ3FRTADX2YWEJNO3A"
-STATE_FILE    = os.path.expanduser("~/.openclaw/workspace/liq_bot_state.json")
-LOG_FILE      = os.path.expanduser("~/.openclaw/workspace/liq_bot_output.log")
-RUNNER        = os.path.expanduser("~/.openclaw/workspace/algo_liq_runner.mjs")
+_SRC = os.path.dirname(os.path.abspath(__file__))
+_RUNNERS = os.path.join(_SRC, "runners")
+STATE_FILE    = os.path.join(_WORKSPACE, "liq_bot_state.json")
+LOG_FILE      = os.path.join(_WORKSPACE, "liq_bot_output.log")
+LAST_RUN_FILE = os.path.join(_WORKSPACE, "liq_bot_last_run.json")
+RUNNER        = os.path.join(_RUNNERS, "algo_liq_runner.mjs")
+SWAP_RUNNER   = os.path.join(_RUNNERS, "swap_liq_runner.mjs")
+NODE_CMD      = os.environ.get("LIQ_BOT_NODE", "").strip() or "node"  # subprocess runner; default from PATH
 MAX_PER_TRADE = 200.0
 MIN_PROFIT    = 0.50   # skip if estimated profit < $0.50
 
@@ -39,10 +46,17 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# ── Wallet ─────────────────────────────────────────────────────────────────────
-BOT_MN      = os.environ.get("LIQUIDATION_BOT_MNEMONIC", "").strip()
-private_key = mnemonic.to_private_key(BOT_MN)
-assert account.address_from_private_key(private_key) == WALLET
+# ── Wallet (address = mnemonic-derived; no hardcoded wallet) ──────────────────
+BOT_MN = os.environ.get("LIQUIDATION_BOT_MNEMONIC", "").strip()
+if not BOT_MN:
+    print(f"ERROR: LIQUIDATION_BOT_MNEMONIC is empty. Set it in {_ENV_FILE}", file=sys.stderr)
+    sys.exit(1)
+try:
+    private_key = mnemonic.to_private_key(BOT_MN)
+except Exception as e:
+    print(f"ERROR: invalid LIQUIDATION_BOT_MNEMONIC ({e}). Check liq-bot.env.", file=sys.stderr)
+    sys.exit(1)
+WALLET = account.address_from_private_key(private_key)
 
 voi_client  = algod.AlgodClient("", VOI_NODE,  headers={"X-Algo-API-Token": ""})
 algo_client = algod.AlgodClient("", ALGO_NODE, headers={"X-Algo-API-Token": ""})
@@ -70,7 +84,7 @@ def get_voi_candidates():
 
 def get_algo_candidates():
     result = subprocess.run(
-        ["/usr/local/bin/node", RUNNER, "candidates", "algorand"],
+        [NODE_CMD, RUNNER, "candidates", "algorand"],
         capture_output=True, text=True, timeout=30
     )
     d = json.loads(result.stdout)
@@ -90,8 +104,13 @@ def get_algo_token_balance(asset_id):
         return d["amount"] / 1e6
     return assets.get(asset_id, 0) / 1e6
 
-# ── Contracts config (from DorkFiMCP) ─────────────────────────────────────────
-with open(os.path.expanduser("~/DorkFiMCP/data/contracts.json")) as f:
+# ── Contracts config (from DorkFiMCP; path via DORKFI_MCP_PATH) ───────────────
+# This local MCP dependency will be replaced by requests to the UluOS gateway service in the future.
+_dorkfi = os.environ.get("DORKFI_MCP_PATH", "").strip() or os.path.expanduser("~/DorkFiMCP")
+if _dorkfi.startswith("~"):
+    _dorkfi = os.path.expanduser(_dorkfi)
+CONTRACTS_PATH = os.path.join(_dorkfi, "data", "contracts.json")
+with open(CONTRACTS_PATH) as f:
     CONTRACTS = json.load(f)
 
 def get_market_info(chain, symbol):
@@ -110,7 +129,7 @@ def liquidate_voi(borrower, collateral_symbol, debt_symbol, amount_usd, state):
     log.info(f"  [VOI] Building liquidation txn: repay {amount_usd:.4f} {debt_symbol}, seize {collateral_symbol}")
     try:
         result = subprocess.run(
-            ["/usr/local/bin/node", RUNNER, "build", borrower, collateral_symbol, debt_symbol,
+            [NODE_CMD, RUNNER, "build", borrower, collateral_symbol, debt_symbol,
              f"{amount_usd:.6f}", WALLET, "voi"],
             capture_output=True, text=True, timeout=60
         )
@@ -133,7 +152,7 @@ def liquidate_algo(borrower, collateral_symbol, debt_symbol, amount_usd, state):
     log.info(f"  [ALGO] Building liquidation txn: repay {amount_usd:.4f} {debt_symbol}, seize {collateral_symbol}")
     try:
         result = subprocess.run(
-            ["/usr/local/bin/node", RUNNER, "build", borrower, collateral_symbol, debt_symbol,
+            [NODE_CMD, RUNNER, "build", borrower, collateral_symbol, debt_symbol,
              f"{amount_usd:.6f}", WALLET, "algorand"],
             capture_output=True, text=True, timeout=60
         )
@@ -266,6 +285,14 @@ def run():
         log.error(f"[ALGO] Error: {e}")
 
     log.info("\n=== Run complete ===")
+    try:
+        with open(LAST_RUN_FILE, "w") as f:
+            json.dump(
+                {"last_run_utc": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"), "status": "ok"},
+                f,
+            )
+    except Exception as e:
+        log.warning(f"Could not write last-run file: {e}")
 
 if __name__ == "__main__":
     pass  # entry point at bottom
@@ -274,18 +301,23 @@ if __name__ == "__main__":
 import urllib.parse
 
 def _tg_token():
+    # Prefer env (e.g. in liq-bot.env); else read from openclaw.json
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    if token:
+        return token
+    tg_json = os.path.join(_WORKSPACE, "openclaw.json") if os.environ.get("LIQ_BOT_WORKSPACE", "").strip() else os.path.expanduser("~/.openclaw/openclaw.json")
     try:
-        with open(os.path.expanduser("~/.openclaw/openclaw.json")) as f:
+        with open(tg_json) as f:
             c = json.load(f)
         return c["channels"]["telegram"]["botToken"]
     except Exception:
         return None
 
-TG_CHAT_ID = "6867273225"
+TG_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 
 def tg_send(msg):
     token = _tg_token()
-    if not token:
+    if not token or not TG_CHAT_ID:
         return
     try:
         url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -299,8 +331,6 @@ def tg_send(msg):
         log.warning(f"Telegram alert failed: {e}")
 
 # ── Swap-and-Liquidate ─────────────────────────────────────────────────────────
-SWAP_RUNNER = os.path.expanduser("~/.openclaw/workspace/swap_liq_runner.mjs")
-
 # Tokens we can swap FROM (stable base assets)
 STABLE_FROM = {
     "voi":      ["aUSDC", "WAD"],   # in order of preference
@@ -323,7 +353,7 @@ def get_quote(chain, from_sym, to_sym, amount_usd, sender):
     """Get swap quote via swap_liq_runner.mjs"""
     try:
         r = subprocess.run(
-            ["/usr/local/bin/node", SWAP_RUNNER, "quote",
+            [NODE_CMD, SWAP_RUNNER, "quote",
              chain, from_sym, to_sym, f"{amount_usd:.6f}", sender],
             capture_output=True, text=True, timeout=20
         )
@@ -339,7 +369,7 @@ def get_quote(chain, from_sym, to_sym, amount_usd, sender):
 def build_voi_swap(from_sym, to_sym, amount_usd, sender):
     """Build Voi swap txns via HumbleSwapMCP"""
     r = subprocess.run(
-        ["/usr/local/bin/node", SWAP_RUNNER, "build_swap",
+        [NODE_CMD, SWAP_RUNNER, "build_swap",
          "voi", from_sym, to_sym, f"{amount_usd:.6f}", sender],
         capture_output=True, text=True, timeout=30
     )

@@ -1,9 +1,19 @@
 import http from 'http';
 import fs from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
-import { getLiquidationCandidates } from '/Users/michaelpappalardo/DorkFiMCP/lib/liquidation.js';
-import { fetchUserHealthAll } from '/Users/michaelpappalardo/DorkFiMCP/lib/api.js';
+import os from 'os';
+import { fileURLToPath, pathToFileURL } from 'url';
+import dotenv from 'dotenv';
+import algosdk from 'algosdk';
+
+// Load env first so DORKFI_MCP_PATH can be set in liq-bot.env
+const _workspace = (process.env.LIQ_BOT_WORKSPACE || '').trim() || path.join(os.homedir(), '.openclaw', 'workspace');
+dotenv.config({ path: path.join(_workspace, 'liq-bot.env') });
+
+// DorkFiMCP path; this local dependency will be replaced by UluOS gateway in the future.
+const _dorkfiPath = (process.env.DORKFI_MCP_PATH || path.join(os.homedir(), 'DorkFiMCP')).replace(/^~/, os.homedir());
+const { getLiquidationCandidates } = await import(pathToFileURL(path.join(_dorkfiPath, 'lib/liquidation.js')).href);
+const { fetchUserHealthAll } = await import(pathToFileURL(path.join(_dorkfiPath, 'lib/api.js')).href);
 
 // ── Market configs ──────────────────────────────────────────────────────────
 const VOI_POOL_A_MARKETS = {
@@ -61,10 +71,7 @@ const LT_MAP = {
 };
 
 async function decodeVoiBoxes(address, poolId) {
-  const pkHex = Buffer.from(
-    (await import('/Users/michaelpappalardo/DorkFiMCP/node_modules/algosdk/dist/cjs/index.js'))
-      .default.decodeAddress(address).publicKey
-  ).toString('hex');
+  const pkHex = Buffer.from(algosdk.decodeAddress(address).publicKey).toString('hex');
 
   const boxListUrl = `${VOI_NODE}/v2/applications/${poolId}/boxes`;
   const boxList = await fetchExt(boxListUrl);
@@ -115,7 +122,20 @@ const __dir = path.dirname(fileURLToPath(import.meta.url));
 const PORT = 8768;
 const VOI_NODE = 'https://mainnet-api.voi.nodely.dev';
 const ALGO_NODE = 'https://mainnet-api.4160.nodely.dev';
-const BOT_WALLET = 'JV7URAS6XGXG7ZH44CWABWZYRIIJPXOWUVNFIJKLKJ3FRTADX2YWEJNO3A';
+
+const _envFile = path.join(_workspace, 'liq-bot.env');
+const BOT_MN = (process.env.LIQUIDATION_BOT_MNEMONIC || '').trim();
+if (!BOT_MN) {
+  console.error(`Dashboard: LIQUIDATION_BOT_MNEMONIC missing. Set in ${_envFile} (same as bot). Set LIQ_BOT_WORKSPACE if using a custom path.`);
+  process.exit(1);
+}
+let BOT_WALLET;
+try {
+  BOT_WALLET = String(algosdk.mnemonicToSecretKey(BOT_MN).addr);
+} catch (e) {
+  console.error('Dashboard: invalid LIQUIDATION_BOT_MNEMONIC —', e.message);
+  process.exit(1);
+}
 
 async function fetchExt(url) {
   const r = await fetch(url, { headers: { 'User-Agent': 'dorkfi-dashboard/1.0' } });
@@ -179,6 +199,7 @@ async function getBalances() {
   const algo = ad.amount/1e6;
   const usdc = (algoAssets[31566704]||0)/1e6;
   return {
+    botWallet: BOT_WALLET,
     voi, ausdc, algo, usdc,
     voiUsd: prices.voiUsd,
     algoUsd: prices.algoUsd,
@@ -225,6 +246,24 @@ const server = http.createServer(async (req, res) => {
     } catch(e) {
       res.writeHead(500, cors);
       res.end(JSON.stringify({ ok: false, error: e.message }));
+    }
+    return;
+  }
+
+  // Health/readiness: bot writes liq_bot_last_run.json each run; stale/missing => 503
+  if (req.url === '/api/health' || req.url === '/health') {
+    const healthPath = path.join(_workspace, 'liq_bot_last_run.json');
+    const staleMs = 15 * 60 * 1000; // 15 minutes
+    try {
+      const raw = fs.readFileSync(healthPath, 'utf8');
+      const data = JSON.parse(raw);
+      const lastRun = data.last_run_utc ? new Date(data.last_run_utc).getTime() : 0;
+      const ok = Date.now() - lastRun < staleMs;
+      res.writeHead(ok ? 200 : 503, cors);
+      res.end(JSON.stringify({ ok, last_run_utc: data.last_run_utc || null, status: data.status || 'unknown' }));
+    } catch {
+      res.writeHead(503, cors);
+      res.end(JSON.stringify({ ok: false, last_run_utc: null, status: 'no_run_file' }));
     }
     return;
   }

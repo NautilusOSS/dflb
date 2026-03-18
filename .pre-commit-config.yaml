@@ -1,0 +1,17 @@
+# Install: pip install pre-commit && pre-commit install
+# Run manually: pre-commit run --all-files
+repos:
+  - repo: https://github.com/psf/black
+    rev: 24.10.0
+    hooks:
+      - id: black
+        language_version: python3
+        args: [--config=pyproject.toml]
+        files: ^src/.*\.py$
+  - repo: local
+    hooks:
+      - id: prettier-dashboard
+        name: prettier (dashboard)
+        entry: bash -c 'cd src/dashboard && npx prettier --check "*.mjs" "*.html" 2>/dev/null || true'
+        language: system
+        files: ^src/dashboard/.*\.(mjs|html)$

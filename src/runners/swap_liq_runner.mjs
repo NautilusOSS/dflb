@@ -1,17 +1,32 @@
 /**
  * Swap-and-Liquidate Runner
- * Builds: [swap stablecoin → debt token] then [liquidate] as separate tx groups
+ * MCP paths: DORKFI_MCP_PATH, HUMBLE_MCP_PATH (defaults ~/DorkFiMCP, ~/HumbleSwapMCP).
+ * This local MCP dependency will be replaced by requests to the UluOS gateway service in the future.
  * Usage:
- *   node swap_liq_runner.mjs quote <chain> <fromSymbol> <toSymbol> <amountUSD> <sender>
- *   node swap_liq_runner.mjs build_swap <chain> <fromSymbol> <toSymbol> <amountUSD> <sender>
- *   node swap_liq_runner.mjs build_liq <chain> <borrower> <collateral> <debt> <amountUSD> <sender>
+ *   node src/runners/swap_liq_runner.mjs quote <chain> <fromSymbol> <toSymbol> <amountUSD> <sender>
+ *   node src/runners/swap_liq_runner.mjs build_swap <chain> <fromSymbol> <toSymbol> <amountUSD> <sender>
+ *   node src/runners/swap_liq_runner.mjs build_liq <chain> <borrower> <collateral> <debt> <amountUSD> <sender>
  */
 
-import { prepareSwap } from '/Users/michaelpappalardo/HumbleSwapMCP/lib/builders.js';
-import { prepareLiquidation } from '/Users/michaelpappalardo/DorkFiMCP/lib/builders.js';
-import { resolveToken } from '/Users/michaelpappalardo/HumbleSwapMCP/lib/tokens.js';
-import { findBestPool } from '/Users/michaelpappalardo/HumbleSwapMCP/lib/pools.js';
-import { getTokenContractId } from '/Users/michaelpappalardo/HumbleSwapMCP/lib/tokens.js';
+import path from 'path';
+import os from 'os';
+import { pathToFileURL } from 'url';
+
+const homedir = os.homedir();
+const _d = process.env.DORKFI_MCP_PATH || path.join(homedir, 'DorkFiMCP');
+const _h = process.env.HUMBLE_MCP_PATH || path.join(homedir, 'HumbleSwapMCP');
+const DORKFI = _d.startsWith('~') ? path.join(homedir, _d.slice(1)) : _d;
+const HUMBLE = _h.startsWith('~') ? path.join(homedir, _h.slice(1)) : _h;
+
+const dorkfiBuilders = await import(pathToFileURL(path.join(DORKFI, 'lib/builders.js')).href);
+const humbleBuilders = await import(pathToFileURL(path.join(HUMBLE, 'lib/builders.js')).href);
+const humbleTokens = await import(pathToFileURL(path.join(HUMBLE, 'lib/tokens.js')).href);
+const humblePools = await import(pathToFileURL(path.join(HUMBLE, 'lib/pools.js')).href);
+
+const { prepareLiquidation } = dorkfiBuilders;
+const { prepareSwap } = humbleBuilders;
+const { resolveToken, getTokenContractId } = humbleTokens;
+const { findBestPool } = humblePools;
 
 // ── Algorand DEX routing (Tinyman + Pact via REST) ─────────────────────────────
 
